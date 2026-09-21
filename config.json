@@ -1,0 +1,19 @@
+{
+    "show_forces": true,
+    "gravity_color": [
+        255,
+        0,
+        0
+    ],
+    "velocity_color": [
+        100,
+        255,
+        100
+    ],
+    "bounce_color": [
+        100,
+        100,
+        255
+    ],
+    "spawn_keybind": "B"
+}
