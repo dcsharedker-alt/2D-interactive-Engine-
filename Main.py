@@ -1,8 +1,10 @@
 import pygame
 import sys
 from config import Config
-from world_selector import WorldSelector
-from normal_mode import NormalPhysicsMode
+
+# Updated imports to match your folder structure
+from ui.world_selector import WorldSelector
+from physics.normal_mode import NormalPhysicsMode
 
 def main():
     pygame.init()
@@ -11,7 +13,7 @@ def main():
     clock = pygame.time.Clock()
     
     # State
-    current_state = "MENU" # MENU, WORLD_SELECT, SIMULATION
+    current_state = "MENU" 
     world_selector = WorldSelector(screen, clock)
     physics_mode = None
     

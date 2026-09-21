@@ -1,8 +1,16 @@
 import pygame
 import math
 import random
+import sys
+import os
+
+# Add parent directory to path so we can find 'config' and 'ui'
+current_dir = os.path.dirname(__file__)
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
+
 from config import Config
-from ui_components import Button, IconButton, FloatInput, HSlider, ColorWheelPicker, Modal
+from ui.ui_components import Button, IconButton, FloatInput, HSlider, ColorWheelPicker, Modal
 
 class RigidBall:
     def __init__(self, x, y, radius, color, mass=None, density=1.0, restitution=0.7, frozen=False):
