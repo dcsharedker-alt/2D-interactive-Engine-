@@ -1,729 +1,520 @@
+import pygame
 import math
 import random
-import sys
-import pygame
-
-# Initialize Pygame & Mixer
-pygame.init()
-pygame.mixer.init()
-
-TEASER_PALETTE = [
-    (190, 60, 60), (60, 180, 90), (80, 120, 220), 
-    (170, 70, 180), (230, 150, 40), (70, 160, 160)
-]
-
-class AudioManager:
-    def __init__(self, audio):
-        self.muted = False
-        self.audio = audio 
-        self.sfx = {'collision': None, 'ui_click': None, 'throw': None}
-
-    def play_sfx(self, category, volume_scale=1.0):
-        if not self.muted and self.sfx.get(category):
-            pass
-
-# ==========================================
-# CUSTOM NATIVE UI WIDGETS
-# ==========================================
-class Button:
-    def __init__(self, x, y, w, h, text, text_color=(255, 255, 255), bg_color=(40, 50, 65)):
-        self.rect = pygame.Rect(x, y, w, h)
-        self.text = text
-        self.text_color = text_color
-        self.base_bg = bg_color
-        self.hover = False
-
-    def draw(self, screen, font, active=False):
-        color = (80, 150, 220) if active else ((min(255, self.base_bg[0]+20), min(255, self.base_bg[1]+20), min(255, self.base_bg[2]+20)) if self.hover else self.base_bg)
-        pygame.draw.rect(screen, color, self.rect, border_radius=6)
-        pygame.draw.rect(screen, (20, 25, 30), self.rect, 2, border_radius=6)
-        txt = font.render(self.text, True, self.text_color)
-        screen.blit(txt, txt.get_rect(center=self.rect.center))
-
-    def is_clicked(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            return self.rect.collidepoint(event.pos)
-        return False
-
-    def update_hover(self, pos):
-        self.hover = self.rect.collidepoint(pos)
-
-
-class IconButton:
-    def __init__(self, x, y, w, h, icon_text, full_text):
-        self.rect = pygame.Rect(x, y, w, h)
-        self.icon_text = icon_text
-        self.full_text = full_text
-        self.hover = False
-
-    def draw(self, screen, font, font_small):
-        color = (70, 80, 100) if self.hover else (45, 55, 70)
-        pygame.draw.rect(screen, color, self.rect, border_radius=8)
-        pygame.draw.rect(screen, (20, 25, 30), self.rect, 2, border_radius=8)
-        
-        txt = font.render(self.icon_text, True, (240, 240, 240))
-        screen.blit(txt, txt.get_rect(center=self.rect.center))
-
-        if self.hover:
-            tt_txt = font_small.render(self.full_text, True, (255, 255, 255))
-            tt_rect = tt_txt.get_rect(midleft=(self.rect.right + 12, self.rect.centery))
-            bg_rect = tt_rect.inflate(16, 12)
-            pygame.draw.rect(screen, (30, 35, 45), bg_rect, border_radius=4)
-            pygame.draw.rect(screen, (100, 150, 200), bg_rect, 1, border_radius=4)
-            screen.blit(tt_txt, tt_rect)
-
-    def is_clicked(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            return self.rect.collidepoint(event.pos)
-        return False
-
-    def update_hover(self, pos):
-        self.hover = self.rect.collidepoint(pos)
-
-
-class FloatInput:
-    def __init__(self, x, y, w, h, init_val, min_val, max_val):
-        self.rect = pygame.Rect(x, y, w, h)
-        self.text = str(float(init_val))
-        self.active = False
-        self.min_val = min_val
-        self.max_val = max_val
-
-    def draw(self, screen, font):
-        color = (100, 200, 255) if self.active else (60, 70, 90)
-        pygame.draw.rect(screen, (20, 24, 30), self.rect, border_radius=4)
-        pygame.draw.rect(screen, color, self.rect, 2, border_radius=4)
-        txt = font.render(self.text + ("|" if self.active else ""), True, (240, 240, 240))
-        screen.blit(txt, (self.rect.x + 5, self.rect.y + (self.rect.height - txt.get_height())//2))
-
-    def handle_event(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            self.active = self.rect.collidepoint(event.pos)
-        if event.type == pygame.KEYDOWN and self.active:
-            if event.key == pygame.K_BACKSPACE:
-                self.text = self.text[:-1]
-            elif event.key == pygame.K_RETURN:
-                self.active = False
-                self.clamp_val()
-            else:
-                if event.unicode.isdigit() or (event.unicode == '.' and '.' not in self.text):
-                    self.text += event.unicode
-                    
-    def clamp_val(self):
-        try:
-            v = float(self.text)
-            v = max(self.min_val, min(self.max_val, v))
-            self.text = str(v)
-        except ValueError:
-            self.text = str(self.min_val)
-
-    def get_val(self):
-        try:
-            return float(self.text)
-        except ValueError:
-            return self.min_val
-        
-    def set_val(self, val):
-        if not self.active:
-            self.text = f"{float(val):.1f}"
-
-
-class HSlider:
-    def __init__(self, x, y, w, min_val, max_val, init_val):
-        self.rect = pygame.Rect(x, y-10, w, 20)
-        self.min_val = min_val
-        self.max_val = max_val 
-        self.val = init_val
-        self.dragging = False
-
-    def draw(self, screen):
-        cy = self.rect.centery
-        pygame.draw.line(screen, (60, 70, 90), (self.rect.x, cy), (self.rect.right, cy), 4)
-        span = self.max_val - self.min_val
-        pct = (self.val - self.min_val) / span if span > 0 else 0
-        pct = max(0.0, min(1.0, pct))
-        kx = self.rect.x + pct * self.rect.width
-        pygame.draw.circle(screen, (100, 200, 255), (int(kx), cy), 8)
-
-    def handle_event(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if self.rect.collidepoint(event.pos):
-                self.dragging = True
-                self.update_val(event.pos[0])
-                return True
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            self.dragging = False
-        elif event.type == pygame.MOUSEMOTION and self.dragging:
-            self.update_val(event.pos[0])
-        return False
-
-    def update_val(self, mx):
-        span = self.rect.width
-        pct = (mx - self.rect.x) / span if span > 0 else 0
-        pct = max(0.0, min(1.0, pct))
-        self.val = self.min_val + pct * (self.max_val - self.min_val)
-
-
-# ==========================================
-# RIGID BODY & VECTORS
-# ==========================================
-def draw_arrow(surface, color, start, end, thickness=3):
-    if start == end: 
-        return
-    pygame.draw.line(surface, color, start, end, thickness)
-    angle = math.atan2(end[1] - start[1], end[0] - start[0])
-    p1 = (end[0] - 10 * math.cos(angle - 0.5), end[1] - 10 * math.sin(angle - 0.5))
-    p2 = (end[0] - 10 * math.cos(angle + 0.5), end[1] - 10 * math.sin(angle + 0.5))
-    pygame.draw.polygon(surface, color, [end, p1, p2])
+from config import Config
+from ui_components import Button, IconButton, FloatInput, HSlider, ColorWheelPicker, Modal
 
 class RigidBall:
-    def __init__(self, x, y, radius=20, density=1.0, color=None):
-        self.x = float(x)
-        self.y = float(y)
-        self.vx = float(random.uniform(-3, 3))
-        self.vy = float(random.uniform(-1, 1))
-        self.radius = float(radius)
-        self.density = float(density)
-        self.mass = (math.pi * (self.radius**2)) * self.density * 0.01
-        self.restitution = 0.8  
+    def __init__(self, x, y, radius, color, mass=None, density=1.0, restitution=0.7, frozen=False):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.color = color
+        self.density = density
+        self.restitution = restitution
+        self.frozen = frozen
         
-        self.color = color or random.choice(TEASER_PALETTE)
-        self.is_dragged = False
-        self.is_frozen = False
-        self.bounce_events = [] 
-
-    def update(self, dt, gravity):
-        for b in self.bounce_events[:]:
-            b['life'] -= dt * 4
-            if b['life'] <= 0:
-                self.bounce_events.remove(b)
-
-        if self.is_frozen or self.is_dragged:
-            return
+        if mass is None:
+            self.mass = density * (math.pi * radius**2)
+        else:
+            self.mass = mass
             
-        self.vy += gravity * dt * 60
-        self.x += self.vx * dt * 60
-        self.y += self.vy * dt * 60
+        self.vx = 0
+        self.vy = 0
+        self.fx = 0
+        self.fy = 0
+        self.dragging = False
+        self.last_impact_force = 0
+        self.impact_timer = 0
 
-    def resolve_wall_collisions(self, bounds):
-        min_x, max_x, min_y, max_y = bounds
-        collided, nx, ny, impact = False, 0, 0, 0
+    def apply_force(self, fx, fy):
+        if not self.frozen:
+            self.fx += fx
+            self.fy += fy
 
-        if self.x - self.radius < min_x:
-            self.x = min_x + self.radius
-            impact = abs(self.vx)
-            self.vx = -self.vx * self.restitution
-            collided, nx, ny = True, 1, 0
-        elif self.x + self.radius > max_x:
-            self.x = max_x - self.radius
-            impact = abs(self.vx)
-            self.vx = -self.vx * self.restitution
-            collided, nx, ny = True, -1, 0
+    def update(self, dt, gravity, drag_coefficient=0.995):
+        if self.frozen or self.dragging:
+            return
 
-        if self.y - self.radius < min_y:
-            self.y = min_y + self.radius
-            impact = abs(self.vy)
-            self.vy = -self.vy * self.restitution
-            collided, nx, ny = True, 0, 1
-        elif self.y + self.radius > max_y: 
-            self.y = max_y - self.radius
-            impact = abs(self.vy)
-            self.vy = -self.vy * self.restitution
-            collided, nx, ny = True, 0, -1
-            if abs(self.vy) < 0.5:
-                self.vy = 0
-                self.vx *= 0.95
+        self.fy += self.mass * gravity
+        ax = self.fx / self.mass
+        ay = self.fy / self.mass
+        self.vx += ax * dt
+        self.vy += ay * dt
+        self.vx *= drag_coefficient
+        self.vy *= drag_coefficient
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        self.fx = 0
+        self.fy = 0
 
-        if collided and impact > 0.8:
-            self.bounce_events.append({'nx': nx, 'ny': ny, 'mag': impact, 'life': 1.0})
+        if self.impact_timer > 0:
+            self.impact_timer -= dt
+            if self.impact_timer <= 0:
+                self.last_impact_force = 0
 
-    def draw(self, surface, is_selected=False, settings=None, font=None, gravity_val=1.0):
-        pygame.draw.circle(surface, self.color, (int(self.x), int(self.y)), int(self.radius))
+    def draw(self, screen, show_vectors=False, vector_scale=1.0, show_values=False, font=None):
+        pygame.draw.circle(screen, self.color, (int(self.x), int(self.y)), self.radius)
+        border_color = tuple(max(0, c - 40) for c in self.color)
+        pygame.draw.circle(screen, border_color, (int(self.x), int(self.y)), self.radius, 2)
+
+        if show_vectors and font:
+            vec_len = 10 * vector_scale
+            
+            # Velocity (Green)
+            v_mag = math.hypot(self.vx, self.vy)
+            if v_mag > 0.1:
+                end_x = self.x + (self.vx / v_mag) * vec_len * 5
+                end_y = self.y + (self.vy / v_mag) * vec_len * 5
+                pygame.draw.line(screen, (0, 255, 0), (self.x, self.y), (end_x, end_y), 2)
+                pygame.draw.circle(screen, (0, 255, 0), (int(end_x), int(end_y)), 3)
+                if show_values:
+                    txt = font.render(f"{v_mag:.1f}", True, (0, 255, 0))
+                    screen.blit(txt, (end_x + 5, end_y))
+
+            # Gravity (Orange)
+            g_end_y = self.y + vec_len * 5
+            pygame.draw.line(screen, (255, 165, 0), (self.x, self.y), (self.x, g_end_y), 2)
+            pygame.draw.circle(screen, (255, 165, 0), (int(self.x), int(g_end_y)), 3)
+            
+            # Impact Force (Yellow)
+            if self.last_impact_force > 0.5 and self.impact_timer > 0:
+                alpha = min(255, int(self.impact_timer * 255))
+                imp_surf = pygame.Surface((self.radius * 4, self.radius * 4), pygame.SRCALPHA)
+                center = (self.radius * 2, self.radius * 2)
+                width = max(1, int(self.last_impact_force * 2))
+                pygame.draw.circle(imp_surf, (255, 255, 0, alpha), center, self.radius + 5 + int(self.last_impact_force), width)
+                screen.blit(imp_surf, (self.x - self.radius*2, self.y - self.radius*2))
+
+
+class AudioManager:
+    def __init__(self):
+        self.mixer_initialized = False
+        try:
+            if pygame.mixer.get_init() is None:
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            self.mixer_initialized = True
+        except Exception as e:
+            print(f"Audio init failed: {e}")
+            self.mixer_initialized = False
+
+    def generate_hit_sound(self, frequency, duration):
+        if not self.mixer_initialized:
+            return None
         
-        highlight = (min(255, self.color[0]+50), min(255, self.color[1]+50), min(255, self.color[2]+50))
-        pygame.draw.circle(surface, highlight, (int(self.x - self.radius*0.3), int(self.y - self.radius*0.3)), int(self.radius*0.35))
-        pygame.draw.circle(surface, (15, 18, 28), (int(self.x), int(self.y)), int(self.radius), 2)
+        sample_rate = 44100
+        n_samples = int(sample_rate * duration)
+        buf = bytearray(n_samples * 2)
+        
+        for i in range(n_samples):
+            t = i / sample_rate
+            envelope = math.exp(-t * 15) 
+            val = int(32767 * envelope * math.sin(2 * math.pi * frequency * t * (1 - t*0.5)))
+            val = max(-32768, min(32767, val))
+            buf[i*2] = val & 0xff
+            buf[i*2+1] = (val >> 8) & 0xff
+            buf[i*2] = val & 0xff
+            buf[i*2+1] = (val >> 8) & 0xff
 
-        if self.is_frozen:
-            pygame.draw.circle(surface, (100, 200, 255), (int(self.x), int(self.y)), 6)
+        return pygame.mixer.Sound(buffer=bytes(buf))
 
-        if is_selected:
-            pygame.draw.circle(surface, (255, 255, 255), (int(self.x), int(self.y)), int(self.radius) + 4, 2)
+    def play_hit(self, impact_magnitude):
+        if not self.mixer_initialized:
+            return
 
-        if settings:
-            show_names = settings.get('show_names', False)
-            show_numbers = settings.get('show_numbers', False)
+        base_freq = 200
+        max_freq = 1200
+        freq = base_freq + (impact_magnitude * 800)
+        freq = min(freq, max_freq)
+        
+        vol = min(1.0, impact_magnitude / 15.0)
+        
+        sound = self.generate_hit_sound(freq, 0.15)
+        if sound:
+            sound.set_volume(vol)
+            sound.play()
 
-            if settings.get('bounce'):
-                for b in self.bounce_events:
-                    length = self.radius + 15 + (b['mag'] * 3 * b['life'])
-                    end_pos = (self.x + b['nx'] * length, self.y + b['ny'] * length)
-                    draw_arrow(surface, (255, 220, 50), (self.x, self.y), end_pos)
-                    
-                    labels = []
-                    if show_names: labels.append("Impact")
-                    if show_numbers: labels.append(f"{b['mag']:.1f}")
-                    if labels and font:
-                        txt = font.render(" | ".join(labels), True, (255, 220, 50))
-                        surface.blit(txt, (end_pos[0] + 5, end_pos[1] - 10))
+    def play_music(self, filename, loops=-1):
+        if not self.mixer_initialized:
+            return
+        try:
+            pygame.mixer.music.load(filename)
+            pygame.mixer.music.play(loops)
+        except Exception as e:
+            print(f"Music load failed: {e}")
 
-            if settings.get('gravity') and not self.is_frozen:
-                g_len = self.radius + (self.mass * 0.1)
-                end_pos = (self.x, self.y + g_len)
-                draw_arrow(surface, (230, 150, 40), (self.x, self.y), end_pos)
-                
-                labels = []
-                if show_names: labels.append("Gravity")
-                if show_numbers: labels.append(f"{self.mass * gravity_val * 60:.1f}")
-                if labels and font:
-                    txt = font.render(" | ".join(labels), True, (230, 150, 40))
-                    surface.blit(txt, (end_pos[0] + 5, end_pos[1] - 10))
-                
-            speed = math.hypot(self.vx, self.vy)
-            if settings.get('velocity') and speed > 0.5 and not self.is_frozen:
-                end_pos = (self.x + (self.vx * 4), self.y + (self.vy * 4))
-                draw_arrow(surface, (60, 220, 90), (self.x, self.y), end_pos)
-                
-                labels = []
-                if show_names: labels.append("Velocity")
-                if show_numbers: labels.append(f"{speed:.1f}")
-                if labels and font:
-                    txt = font.render(" | ".join(labels), True, (60, 220, 90))
-                    surface.blit(txt, (end_pos[0] + 5, end_pos[1] - 10))
+    def stop_music(self):
+        if self.mixer_initialized:
+            pygame.mixer.music.stop()
 
 
-# ==========================================
-# MAIN ENGINE
-# ==========================================
-class NormalPhysics:
-    def __init__(self, world_config, width=1200, height=700):
-        self.width = width
-        self.height = height
-        self.gravity = 1.0
+class NormalPhysicsMode:
+    def __init__(self, screen, clock, world_config):
+        self.screen = screen
+        self.clock = clock
+        self.config = Config()
         self.world_config = world_config
-        self.bg_color = (20, 24, 30)
         
-        self.in_main_menu = True
-        self.manual_pause = False
-        self.active_modal = None  # None, 'settings', 'spawn', 'status'
+        self.running = True
+        self.paused = False
         
         self.balls = []
-        self.selected_ball = None
-        self.drag_start = None
-
-        self.font_large = pygame.font.SysFont('Consolas', 36, bold=True)
-        self.font = pygame.font.SysFont('Consolas', 15, bold=True)
-        self.font_small = pygame.font.SysFont('Consolas', 12)
+        self.particles = []
         
-        self.vectors = {
-            'velocity': True, 
-            'gravity': True, 
-            'bounce': True,
-            'show_names': False,
-            'show_numbers': False
-        }
+        self.gravity = world_config.get('gravity', 9.8)
+        self.show_vectors = False
+        self.show_vector_values = False
+        self.vector_scale = 1.0
         
-        self.init_ui_elements()
-
-    def init_ui_elements(self):
-        # --- Main Menu UI ---
-        self.btn_start = Button(self.width//2 - 100, self.height//2, 200, 50, "START SIMULATION", bg_color=(60, 180, 90))
-
-        # --- Professional Center-Left Toolbar ---
-        tb_w, tb_h = 56, 230
-        tb_x, tb_y = 15, self.height // 2 - tb_h // 2
-        self.toolbar_rect = pygame.Rect(tb_x, tb_y, tb_w, tb_h)
-        
-        b_x = tb_x + 8
-        self.toolbar_btns = {
-            'status': IconButton(b_x, tb_y + 15, 40, 40, "i", "Status"),
-            'spawn': IconButton(b_x, tb_y + 65, 40, 40, "+", "Spawn Object"),
-            'settings': IconButton(b_x, tb_y + 115, 40, 40, "Se", "Settings"),
-            'menu': IconButton(b_x, tb_y + 175, 40, 40, "M", "Main Menu")
-        }
-
-        # --- Modal Menus Setup ---
-        modal_w, modal_h = 350, 450
-        self.modal_rect = pygame.Rect(self.width // 2 - modal_w // 2, self.height // 2 - modal_h // 2, modal_w, modal_h)
-        mx, my = self.modal_rect.x, self.modal_rect.y
-
-        self.btn_close_modal = Button(mx + 20, my + 390, modal_w - 40, 40, "Close Menu", bg_color=(190, 60, 60))
-
-        # Settings Modal UI
-        self.btn_vel = Button(mx + 20, my + 60, modal_w - 40, 35, "Enable Velocity Arrows (Green)", text_color=(100, 255, 120))
-        self.btn_grav = Button(mx + 20, my + 110, modal_w - 40, 35, "Enable Gravity Arrows (Orange)", text_color=(255, 180, 80))
-        self.btn_bnce = Button(mx + 20, my + 160, modal_w - 40, 35, "Enable Force Arrows (Yellow)", text_color=(255, 255, 100))
-        self.btn_names = Button(mx + 20, my + 230, modal_w - 40, 35, "Show Force Names")
-        self.btn_nums = Button(mx + 20, my + 280, modal_w - 40, 35, "Show Force Numbers")
-
-        # Spawn Modal UI
-        self.spawn_color = TEASER_PALETTE[0]
-        self.ui_den_slider = HSlider(mx + 20, my + 80, 200, 0.1, 20.0, 1.0)
-        self.ui_den_input = FloatInput(mx + 240, my + 65, 60, 30, 1.0, 0.1, 999.0)
-        self.ui_siz_slider = HSlider(mx + 20, my + 150, 200, 10, 100, 25)
-        self.ui_siz_input = FloatInput(mx + 240, my + 135, 60, 30, 25, 5.0, 999.0)
-        
-        self.wheel_radius = 60
-        self.wheel_center = (mx + 220, my + 270)
-        self.color_wheel_surf = pygame.Surface((self.wheel_radius*2, self.wheel_radius*2), pygame.SRCALPHA)
-        for x in range(self.wheel_radius*2):
-            for y in range(self.wheel_radius*2):
-                dx = x - self.wheel_radius
-                dy = y - self.wheel_radius
-                dist = math.hypot(dx, dy)
-                if dist <= self.wheel_radius:
-                    angle = math.degrees(math.atan2(dy, dx)) % 360
-                    sat = min(1.0, dist / self.wheel_radius)
-                    c = pygame.Color(0)
-                    c.hsva = (angle, sat * 100, 100, 100)
-                    self.color_wheel_surf.set_at((x, y), c)
-                    
-        self.btn_create = Button(mx + 20, my + 390, modal_w // 2 - 25, 40, "Spawn", bg_color=(60, 180, 90))
-        self.btn_close_spawn = Button(mx + modal_w // 2 + 5, my + 390, modal_w // 2 - 25, 40, "Close", bg_color=(190, 60, 60))
-
-        # --- Right Click Context Menu ---
-        self.ctx_active = False
-        self.ctx_ball = None
-        self.ctx_mode = "main" 
-        self.ctx_rect = pygame.Rect(0, 0, 140, 100)
-        self.ctx_vx_input = FloatInput(0, 0, 50, 25, 0, -100, 100)
-        self.ctx_vy_input = FloatInput(0, 0, 50, 25, 0, -100, 100)
-
-    def reset_simulation(self):
-        self.balls = [RigidBall(random.randint(100, self.width - 100), random.randint(100, self.height - 300)) for _ in range(5)]
-        self.manual_pause = False
+        # Toolbar: Left Center, Rounded
+        self.toolbar_rect = pygame.Rect(20, screen.get_height()//2 - 150, 60, 300)
+        self.toolbar_expanded = False
         self.active_modal = None
-        self.ctx_active = False
+        
+        self.spawn_radius = 20
+        self.spawn_density = 1.0
+        self.spawn_restitution = 0.7
+        self.spawn_color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
+        
+        self.audio = AudioManager()
+        
+        self.font_small = pygame.font.SysFont("Arial", 14)
+        self.font_med = pygame.font.SysFont("Arial", 18)
+        self.font_large = pygame.font.SysFont("Arial", 24)
 
-    def handle_collisions(self):
-        for i in range(len(self.balls)):
-            for j in range(i + 1, len(self.balls)):
-                b1, b2 = self.balls[i], self.balls[j]
-                dx, dy = b2.x - b1.x, b2.y - b1.y
-                dist = math.hypot(dx, dy)
-                min_dist = b1.radius + b2.radius
+        self.init_toolbar()
 
-                if 0 < dist < min_dist:
-                    overlap = min_dist - dist
-                    nx, ny = dx / dist, dy / dist
+    def init_toolbar(self):
+        btn_w, btn_h = 40, 40
+        start_x = self.toolbar_rect.centerx - btn_w // 2
+        
+        buttons_data = [
+            ("+", self.open_spawn_modal, (50, 200, 50)),
+            ("S", self.open_status_modal, (50, 50, 200)),
+            ("V", self.toggle_vectors, (200, 200, 50)),
+            ("P", self.toggle_pause, (255, 165, 0)),
+            ("M", self.open_menu_modal, (100, 100, 100)),
+        ]
+        
+        self.toolbar_buttons = []
+        total_h = len(buttons_data) * (btn_h + 10)
+        current_y = self.toolbar_rect.centery - total_h // 2
+        
+        for label, callback, color in buttons_data:
+            rect = pygame.Rect(start_x, current_y, btn_w, btn_h)
+            btn = IconButton(rect, label, color, hover_color=tuple(min(255, c+40) for c in color))
+            btn.callback = callback
+            self.toolbar_buttons.append(btn)
+            current_y += btn_h + 10
 
-                    if not b1.is_frozen and not b1.is_dragged:
-                        b1.x -= nx * overlap * 0.5
-                        b1.y -= ny * overlap * 0.5
-                    if not b2.is_frozen and not b2.is_dragged:
-                        b2.x += nx * overlap * 0.5
-                        b2.y += ny * overlap * 0.5
+    def open_spawn_modal(self):
+        if self.active_modal: return
+        self.active_modal = SpawnModal(self.screen, self)
 
-                    kx, ky = b1.vx - b2.vx, b1.vy - b2.vy
-                    p = 2 * (nx * kx + ny * ky) / (b1.mass + b2.mass)
+    def open_status_modal(self):
+        if self.active_modal: return
+        self.active_modal = StatusModal(self.screen, self)
 
-                    if not b1.is_frozen and not b1.is_dragged:
-                        b1.vx -= p * b2.mass * nx
-                        b1.vy -= p * b2.mass * ny
-                    if not b2.is_frozen and not b2.is_dragged:
-                        b2.vx += p * b1.mass * nx
-                        b2.vy += p * b1.mass * ny
+    def toggle_vectors(self):
+        self.show_vectors = not self.show_vectors
 
-                    rel_speed = math.hypot(kx, ky)
-                    if rel_speed > 0.5:
-                        b1.bounce_events.append({'nx': nx, 'ny': ny, 'mag': rel_speed, 'life': 1.0})
-                        b2.bounce_events.append({'nx': -nx, 'ny': -ny, 'mag': rel_speed, 'life': 1.0})
+    def toggle_pause(self):
+        self.paused = not self.paused
+
+    def open_menu_modal(self):
+        if self.active_modal: return
+        self.active_modal = MainmenuModal(self.screen, self)
 
     def handle_event(self, event):
-        pos = pygame.mouse.get_pos()
-
-        if self.in_main_menu:
-            self.btn_start.update_hover(pos)
-            if self.btn_start.is_clicked(event):
-                self.in_main_menu = False
-                self.reset_simulation()
-            return
-
-        # Spacebar toggles manual pause
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-            self.manual_pause = not self.manual_pause
-
-        # Modal UI Intercepts all inputs if open
         if self.active_modal:
-            self.btn_close_modal.update_hover(pos)
-            
-            if self.active_modal == 'settings':
-                self.btn_vel.update_hover(pos)
-                self.btn_grav.update_hover(pos)
-                self.btn_bnce.update_hover(pos)
-                self.btn_names.update_hover(pos)
-                self.btn_nums.update_hover(pos)
-                
-                if self.btn_vel.is_clicked(event): self.vectors['velocity'] = not self.vectors['velocity']
-                if self.btn_grav.is_clicked(event): self.vectors['gravity'] = not self.vectors['gravity']
-                if self.btn_bnce.is_clicked(event): self.vectors['bounce'] = not self.vectors['bounce']
-                if self.btn_names.is_clicked(event): self.vectors['show_names'] = not self.vectors['show_names']
-                if self.btn_nums.is_clicked(event): self.vectors['show_numbers'] = not self.vectors['show_numbers']
-                
-                if self.btn_close_modal.is_clicked(event):
-                    self.active_modal = None
-
-            elif self.active_modal == 'spawn':
-                self.btn_create.update_hover(pos)
-                self.btn_close_spawn.update_hover(pos)
-                self.ui_den_input.handle_event(event)
-                self.ui_siz_input.handle_event(event)
-                self.ui_den_slider.handle_event(event)
-                self.ui_siz_slider.handle_event(event)
-                
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    dx, dy = pos[0] - self.wheel_center[0], pos[1] - self.wheel_center[1]
-                    dist = math.hypot(dx, dy)
-                    if dist <= self.wheel_radius:
-                        angle = math.degrees(math.atan2(dy, dx)) % 360
-                        sat = min(1.0, dist / self.wheel_radius)
-                        c = pygame.Color(0)
-                        c.hsva = (angle, sat * 100, 100, 100)
-                        self.spawn_color = (c.r, c.g, c.b)
-                        
-                if self.btn_create.is_clicked(event):
-                    self.balls.append(RigidBall(
-                        self.width // 2, 80, 
-                        radius=int(self.ui_siz_input.get_val()), 
-                        density=float(self.ui_den_input.get_val()), 
-                        color=self.spawn_color
-                    ))
-                    self.active_modal = None
-                
-                if self.btn_close_spawn.is_clicked(event):
-                    self.active_modal = None
-                    
-            elif self.active_modal == 'status':
-                if self.btn_close_modal.is_clicked(event):
-                    self.active_modal = None
-            return 
-            
-        # Context Menu Interactions
-        if self.ctx_active and self.ctx_ball:
-            if self.ctx_mode == 'add_vel':
-                self.ctx_vx_input.handle_event(event)
-                self.ctx_vy_input.handle_event(event)
-
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if self.ctx_rect.collidepoint(pos):
-                    if self.ctx_mode == 'main':
-                        if pos[1] < self.ctx_rect.y + 50:
-                            self.ctx_ball.is_frozen = not self.ctx_ball.is_frozen
-                            if self.ctx_ball.is_frozen: 
-                                self.ctx_ball.vx = 0.0
-                                self.ctx_ball.vy = 0.0
-                            self.ctx_active = False
-                        else:
-                            self.ctx_mode = 'add_vel'
-                    else:
-                        btn_apply = pygame.Rect(self.ctx_rect.x + 10, self.ctx_rect.bottom - 35, 120, 25)
-                        if btn_apply.collidepoint(pos):
-                            self.ctx_ball.vx += self.ctx_vx_input.get_val()
-                            self.ctx_ball.vy += self.ctx_vy_input.get_val()
-                            self.ctx_active = False
-                else:
-                    self.ctx_active = False
-                return
-
-        # Floating Toolbar Updates
-        for key, btn in self.toolbar_btns.items():
-            btn.update_hover(pos)
-            if btn.is_clicked(event):
-                if key == 'menu':
-                    self.in_main_menu = True
-                    self.balls.clear()
-                else:
-                    self.active_modal = key
-                return
-
-        # Left Click Dragging
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            for ball in reversed(self.balls):
-                if math.hypot(ball.x - pos[0], ball.y - pos[1]) <= ball.radius:
-                    self.selected_ball = ball
-                    self.selected_ball.is_dragged = True
-                    self.drag_start = pos
-                    break
-
-        # Right Click Context Menu
-        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-            for ball in reversed(self.balls):
-                if math.hypot(ball.x - pos[0], ball.y - pos[1]) <= ball.radius:
-                    self.ctx_active = True
-                    self.ctx_ball = ball
-                    mx = min(pos[0], self.width - 140)
-                    my = min(pos[1], self.height - 100)
-                    self.ctx_rect.topleft = (mx, my)
-                    self.ctx_mode = 'main'
-                    self.ctx_vx_input.set_val(0)
-                    self.ctx_vy_input.set_val(0)
-                    self.ctx_vx_input.rect.topleft = (self.ctx_rect.x + 10, self.ctx_rect.y + 30)
-                    self.ctx_vy_input.rect.topleft = (self.ctx_rect.x + 70, self.ctx_rect.y + 30)
-                    break
-
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            if self.selected_ball:
-                if self.drag_start:
-                    dx, dy = pos[0] - self.drag_start[0], pos[1] - self.drag_start[1]
-                    if math.hypot(dx, dy) > 10:
-                        self.selected_ball.vx = dx * 0.15
-                        self.selected_ball.vy = dy * 0.15
-                self.selected_ball.is_dragged = False
-                self.selected_ball = None
-                self.drag_start = None
-
-        elif event.type == pygame.MOUSEMOTION:
-            if self.selected_ball and self.selected_ball.is_dragged:
-                self.selected_ball.x = max(self.selected_ball.radius, min(self.width - self.selected_ball.radius, pos[0]))
-                self.selected_ball.y = max(self.selected_ball.radius, min(self.height - self.selected_ball.radius, pos[1]))
-
-    def run_frame(self, screen):
-        dt = 1.0 / 60.0
-        mouse_pos = pygame.mouse.get_pos()
-
-        screen.fill(self.bg_color)
-
-        if self.in_main_menu:
-            title = self.font_large.render("PHYSICS SANDBOX", True, (255, 255, 255))
-            screen.blit(title, title.get_rect(center=(self.width//2, self.height//2 - 80)))
-            self.btn_start.draw(screen, self.font)
+            if self.active_modal.handle_event(event):
+                self.active_modal = None
             return
 
-        # Modal Updates
-        if self.active_modal == 'spawn':
-            if not self.ui_den_input.active: 
-                self.ui_den_input.set_val(self.ui_den_slider.val)
-            else: 
-                self.ui_den_slider.val = min(self.ui_den_slider.max_val, self.ui_den_input.get_val())
-            if not self.ui_siz_input.active: 
-                self.ui_siz_input.set_val(self.ui_siz_slider.val)
-            else: 
-                self.ui_siz_slider.val = min(self.ui_siz_slider.max_val, self.ui_siz_input.get_val())
+        mouse_pos = pygame.mouse.get_pos()
+        if self.toolbar_rect.collidepoint(mouse_pos):
+            self.toolbar_expanded = True
+        else:
+            self.toolbar_expanded = False
 
-        # Physics Updates (Only when not paused & modal not open)
-        is_paused = self.manual_pause or (self.active_modal is not None)
-        if not is_paused:
-            for ball in self.balls:
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                for btn in self.toolbar_buttons:
+                    if btn.rect.collidepoint(mouse_pos):
+                        btn.click()
+                        return
+                
+                for ball in reversed(self.balls):
+                    dist = math.hypot(ball.x - mouse_pos[0], ball.y - mouse_pos[1])
+                    if dist < ball.radius:
+                        ball.dragging = True
+                        ball.vx = 0
+                        ball.vy = 0
+                        return
+            
+            elif event.button == 3:
+                for ball in self.balls:
+                    dist = math.hypot(ball.x - mouse_pos[0], ball.y - mouse_pos[1])
+                    if dist < ball.radius:
+                        self.active_modal = ContextModal(self.screen, self, ball)
+                        return
+
+        if event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:
+                for ball in self.balls:
+                    if ball.dragging:
+                        ball.dragging = False
+
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE:
+                self.paused = not self.paused
+
+    def update(self, dt):
+        if self.paused:
+            return
+
+        mouse_pos = pygame.mouse.get_pos()
+        mouse_vel = pygame.mouse.get_rel()
+        
+        for ball in self.balls:
+            if ball.dragging:
+                ball.x = mouse_pos[0]
+                ball.y = mouse_pos[1]
+                ball.vx = mouse_vel[0] * 0.5 
+                ball.vy = mouse_vel[1] * 0.5
+            else:
                 ball.update(dt, self.gravity)
-                ball.resolve_wall_collisions((0, self.width, 0, self.height))
-            self.handle_collisions()
+                self.resolve_collisions(ball)
 
-        # Render Physics Space Background & Grid
-        for x in range(0, self.width, 50): 
-            pygame.draw.line(screen, (30, 34, 42), (x, 0), (x, self.height))
-        for y in range(0, self.height, 50): 
-            pygame.draw.line(screen, (30, 34, 42), (0, y), (self.width, y))
+    def resolve_collisions(self, ball):
+        width, height = self.screen.get_size()
+        collided = False
+        impact_force = 0
 
-        if self.selected_ball and self.selected_ball.is_dragged and self.drag_start:
-            pygame.draw.line(screen, (255, 100, 100), (self.selected_ball.x, self.selected_ball.y), mouse_pos, 2)
+        # Floor
+        if ball.y + ball.radius > height - 50:
+            ball.y = height - 50 - ball.radius
+            if ball.vy > 0:
+                impact_force = abs(ball.vy) * ball.mass * 0.5
+                ball.vy *= -ball.restitution
+                ball.vx *= 0.95
+                collided = True
+        
+        # Ceiling
+        elif ball.y - ball.radius < 0:
+            ball.y = ball.radius
+            if ball.vy < 0:
+                impact_force = abs(ball.vy) * ball.mass * 0.5
+                ball.vy *= -ball.restitution
+                collided = True
+
+        # Walls
+        if ball.x + ball.radius > width:
+            ball.x = width - ball.radius
+            if ball.vx > 0:
+                impact_force = abs(ball.vx) * ball.mass * 0.5
+                ball.vx *= -ball.restitution
+                collided = True
+        elif ball.x - ball.radius < 0:
+            ball.x = ball.radius
+            if ball.vx < 0:
+                impact_force = abs(ball.vx) * ball.mass * 0.5
+                ball.vx *= -ball.restitution
+                collided = True
+
+        if collided and impact_force > 1.0:
+            ball.last_impact_force = impact_force
+            ball.impact_timer = 0.5
+            self.audio.play_hit(impact_force)
+
+        # Ball to Ball
+        for other in self.balls:
+            if other == ball: continue
+            dx = other.x - ball.x
+            dy = other.y - ball.y
+            dist = math.hypot(dx, dy)
+            min_dist = ball.radius + other.radius
+
+            if dist < min_dist and dist > 0:
+                nx = dx / dist
+                ny = dy / dist
+                
+                dvx = ball.vx - other.vx
+                dvy = ball.vy - other.vy
+                vel_along_normal = dvx * nx + dvy * ny
+
+                if vel_along_normal > 0: continue
+
+                e = min(ball.restitution, other.restitution)
+                j = -(1 + e) * vel_along_normal
+                j /= (1/ball.mass + 1/other.mass)
+
+                ix = j * nx
+                iy = j * ny
+                
+                if not ball.frozen:
+                    ball.vx += ix / ball.mass
+                    ball.vy += iy / ball.mass
+                if not other.frozen:
+                    other.vx -= ix / other.mass
+                    other.vy -= iy / other.mass
+
+                overlap = min_dist - dist
+                corr = overlap / 2.0
+                if not ball.frozen:
+                    ball.x -= nx * corr
+                    ball.y -= ny * corr
+                if not other.frozen:
+                    other.x += nx * corr
+                    other.y += ny * corr
+                
+                impact = abs(j) * 0.1
+                if impact > 1.0:
+                    ball.last_impact_force = impact
+                    ball.impact_timer = 0.3
+                    other.last_impact_force = impact
+                    other.impact_timer = 0.3
+                    self.audio.play_hit(impact)
+
+    def draw(self):
+        # Light Gray Background
+        self.screen.fill((200, 205, 210))
+        
+        # Subtle Grid
+        grid_size = 50
+        for x in range(0, self.screen.get_width(), grid_size):
+            pygame.draw.line(self.screen, (180, 185, 190), (x, 0), (x, self.screen.get_height()), 1)
+        for y in range(0, self.screen.get_height(), grid_size):
+            pygame.draw.line(self.screen, (180, 185, 190), (0, y), (self.screen.get_width(), y), 1)
+            
+        # Ground
+        pygame.draw.rect(self.screen, (100, 100, 100), (0, self.screen.get_height()-50, self.screen.get_width(), 50))
+        pygame.draw.line(self.screen, (50, 50, 50), (0, self.screen.get_height()-50), (self.screen.get_width(), self.screen.get_height()-50), 2)
 
         for ball in self.balls:
-            ball.draw(screen, is_selected=(ball == self.selected_ball), settings=self.vectors, font=self.font_small, gravity_val=self.gravity)
+            ball.draw(self.screen, self.show_vectors, self.vector_scale, self.show_vector_values, self.font_small)
 
-        # Context Menu Draw
-        if self.ctx_active and self.ctx_ball and not self.active_modal:
-            pygame.draw.rect(screen, (35, 40, 50), self.ctx_rect, border_radius=8)
-            pygame.draw.rect(screen, (70, 140, 220), self.ctx_rect, 2, border_radius=8)
+        # Toolbar (Rounded Rectangle)
+        current_w = 200 if self.toolbar_expanded else 60
+        toolbar_draw_rect = pygame.Rect(self.toolbar_rect.x, self.toolbar_rect.y, current_w, self.toolbar_rect.height)
+        
+        pygame.draw.rect(self.screen, (40, 44, 50), toolbar_draw_rect, border_radius=15)
+        pygame.draw.rect(self.screen, (70, 75, 85), toolbar_draw_rect, 2, border_radius=15)
+        
+        for btn in self.toolbar_buttons:
+            btn.draw(self.screen)
             
-            title = self.font.render(f"Mass: {self.ctx_ball.mass:.1f}", True, (200, 210, 220))
-            screen.blit(title, (self.ctx_rect.x + 10, self.ctx_rect.y + 5))
-
-            if self.ctx_mode == 'main':
-                f_txt = "Unfreeze" if self.ctx_ball.is_frozen else "Freeze"
-                pygame.draw.rect(screen, (50, 60, 75), (self.ctx_rect.x, self.ctx_rect.y+25, self.ctx_rect.w, 35))
-                screen.blit(self.font.render(f_txt, True, (255, 255, 255)), (self.ctx_rect.x + 15, self.ctx_rect.y + 35))
+            # Tooltip on Hover
+            if self.toolbar_expanded and btn.rect.collidepoint(pygame.mouse.get_pos()):
+                tooltip_text = ""
+                if btn.label == "+": tooltip_text = "Spawn Object"
+                elif btn.label == "S": tooltip_text = "Simulation Stats"
+                elif btn.label == "V": tooltip_text = "Toggle Vectors"
+                elif btn.label == "P": tooltip_text = "Pause/Resume"
+                elif btn.label == "M": tooltip_text = "Main Menu"
                 
-                pygame.draw.rect(screen, (40, 50, 65), (self.ctx_rect.x, self.ctx_rect.y+60, self.ctx_rect.w, 35))
-                screen.blit(self.font.render("+ Velocity", True, (255, 255, 255)), (self.ctx_rect.x + 15, self.ctx_rect.y + 70))
-            else:
-                self.ctx_vx_input.draw(screen, self.font)
-                self.ctx_vy_input.draw(screen, self.font)
-                btn = pygame.Rect(self.ctx_rect.x + 10, self.ctx_rect.bottom - 35, 120, 25)
-                pygame.draw.rect(screen, (60, 180, 90), btn, border_radius=4)
-                screen.blit(self.font.render("Apply", True, (255, 255, 255)), (btn.x + 35, btn.y + 5))
+                if tooltip_text:
+                    txt_surf = self.font_small.render(tooltip_text, True, (255, 255, 255))
+                    txt_rect = txt_surf.get_rect(midleft=(toolbar_draw_rect.right + 10, btn.rect.centery))
+                    bg_rect = txt_rect.inflate(10, 5)
+                    pygame.draw.rect(self.screen, (0, 0, 0), bg_rect, border_radius=5)
+                    self.screen.blit(txt_surf, txt_rect)
 
-        # Render Floating Toolbar
-        pygame.draw.rect(screen, (28, 33, 42), self.toolbar_rect, border_radius=12)
-        pygame.draw.rect(screen, (50, 60, 75), self.toolbar_rect, 2, border_radius=12)
-        for btn in self.toolbar_btns.values():
-            btn.draw(screen, self.font, self.font_small)
-
-        # Spacebar Manual Pause Overlay
-        if self.manual_pause and not self.active_modal:
-            pause_txt = self.font.render("PAUSED - PRESS SPACE TO RESUME", True, (255, 100, 100))
-            bg_rect = pause_txt.get_rect(center=(self.width // 2, 30))
-            pygame.draw.rect(screen, (20, 24, 30), bg_rect.inflate(20, 10), border_radius=5)
-            pygame.draw.rect(screen, (255, 100, 100), bg_rect.inflate(20, 10), 2, border_radius=5)
-            screen.blit(pause_txt, bg_rect)
-
-        # Center Modal Overlay
         if self.active_modal:
-            # Alpha darkened background
-            overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-            overlay.fill((10, 12, 15, 150))
-            screen.blit(overlay, (0, 0))
-
-            # Modal Box
-            pygame.draw.rect(screen, (30, 35, 45), self.modal_rect, border_radius=12)
-            pygame.draw.rect(screen, (70, 140, 220), self.modal_rect, 3, border_radius=12)
+            self.active_modal.draw()
             
-            title_txt = self.font_large.render(self.active_modal.upper(), True, (255, 255, 255))
-            screen.blit(title_txt, title_txt.get_rect(center=(self.modal_rect.centerx, self.modal_rect.y + 30)))
-            pygame.draw.line(screen, (60, 70, 90), (self.modal_rect.x + 20, self.modal_rect.y + 50), (self.modal_rect.right - 20, self.modal_rect.y + 50), 2)
+        if self.paused:
+            s = pygame.Surface((self.screen.get_width(), self.screen.get_height()))
+            s.set_alpha(100)
+            s.fill((0,0,0))
+            self.screen.blit(s, (0,0))
+            txt = self.font_large.render("PAUSED", True, (255, 255, 255))
+            self.screen.blit(txt, (self.screen.get_width()//2 - txt.get_width()//2, self.screen.get_height()//2))
 
-            if self.active_modal == 'status':
-                txt_obj = self.font.render(f"Objects in Scene: {len(self.balls)}", True, (200, 200, 200))
-                screen.blit(txt_obj, (self.modal_rect.x + 30, self.modal_rect.y + 80))
-                total_mass = sum(b.mass for b in self.balls)
-                txt_mass = self.font.render(f"Total Combined Mass: {total_mass:.1f}", True, (200, 200, 200))
-                screen.blit(txt_mass, (self.modal_rect.x + 30, self.modal_rect.y + 120))
-                self.btn_close_modal.draw(screen, self.font)
+    def spawn_ball(self, x=None, y=None):
+        if x is None: x = self.screen.get_width() // 2
+        if y is None: y = 100
+        ball = RigidBall(x, y, self.spawn_radius, self.spawn_color, 
+                         density=self.spawn_density, restitution=self.spawn_restitution)
+        self.balls.append(ball)
+        self.audio.play_hit(0.5)
 
-            elif self.active_modal == 'settings':
-                self.btn_vel.draw(screen, self.font, active=self.vectors['velocity'])
-                self.btn_grav.draw(screen, self.font, active=self.vectors['gravity'])
-                self.btn_bnce.draw(screen, self.font, active=self.vectors['bounce'])
-                pygame.draw.line(screen, (60, 70, 90), (self.modal_rect.x + 20, self.modal_rect.y + 215), (self.modal_rect.right - 20, self.modal_rect.y + 215), 2)
-                self.btn_names.draw(screen, self.font, active=self.vectors['show_names'])
-                self.btn_nums.draw(screen, self.font, active=self.vectors['show_numbers'])
-                self.btn_close_modal.draw(screen, self.font)
+# --- Modals ---
 
-            elif self.active_modal == 'spawn':
-                screen.blit(self.font.render("Density / Mass", True, (180, 180, 180)), (self.modal_rect.x + 20, self.modal_rect.y + 60))
-                self.ui_den_slider.draw(screen)
-                self.ui_den_input.draw(screen, self.font)
-                
-                screen.blit(self.font.render("Radius (Size)", True, (180, 180, 180)), (self.modal_rect.x + 20, self.modal_rect.y + 130))
-                self.ui_siz_slider.draw(screen)
-                self.ui_siz_input.draw(screen, self.font)
+class SpawnModal(Modal):
+    def __init__(self, screen, parent):
+        super().__init__(screen, "Spawn Object", 400, 500)
+        self.parent = parent
+        self.setup_ui()
 
-                screen.blit(self.font.render("Spawn Color", True, (180, 180, 180)), (self.modal_rect.x + 20, self.modal_rect.y + 210))
-                screen.blit(self.color_wheel_surf, (self.wheel_center[0] - self.wheel_radius, self.wheel_center[1] - self.wheel_radius))
-                
-                # Show chosen color
-                pygame.draw.circle(screen, self.spawn_color, (self.modal_rect.x + 80, self.wheel_center[1]), 30)
-                pygame.draw.circle(screen, (255,255,255), (self.modal_rect.x + 80, self.wheel_center[1]), 32, 3)
+    def setup_ui(self):
+        self.add_label("Radius")
+        self.add_slider("radius", 5, 100, self.parent.spawn_radius, callback=lambda v: setattr(self.parent, 'spawn_radius', int(v)))
+        
+        self.add_label("Density")
+        self.add_slider("density", 0.1, 5.0, self.parent.spawn_density, callback=lambda v: setattr(self.parent, 'spawn_density', v))
+        
+        self.add_label("Bounciness")
+        self.add_slider("restitution", 0.1, 1.2, self.parent.spawn_restitution, callback=lambda v: setattr(self.parent, 'spawn_restitution', v))
+        
+        self.add_label("Color")
+        self.cw = ColorWheelPicker(pygame.Rect(self.content_rect.x + 50, self.content_rect.y + 250, 200, 200), self.parent.spawn_color)
+        self.elements.append(self.cw)
+        
+        btn = Button(pygame.Rect(self.content_rect.centerx - 75, self.content_rect.bottom - 60, 150, 40), "Spawn", (50, 200, 50))
+        btn.callback = lambda: self.parent.spawn_ball()
+        self.elements.append(btn)
 
-                self.btn_create.draw(screen, self.font)
-                self.btn_close_spawn.draw(screen, self.font)
+class StatusModal(Modal):
+    def __init__(self, screen, parent):
+        super().__init__(screen, "Simulation Status", 300, 200)
+        self.parent = parent
 
+    def draw_content(self):
+        count = len(self.parent.balls)
+        total_mass = sum(b.mass for b in self.parent.balls)
+        
+        text1 = self.font.render(f"Objects: {count}", True, (255, 255, 255))
+        text2 = self.font.render(f"Total Mass: {total_mass:.1f}", True, (255, 255, 255))
+        text3 = self.font.render(f"FPS: {int(self.parent.clock.get_fps())}", True, (255, 255, 255))
+        
+        self.screen.blit(text1, (self.content_rect.x + 20, self.content_rect.y + 40))
+        self.screen.blit(text2, (self.content_rect.x + 20, self.content_rect.y + 70))
+        self.screen.blit(text3, (self.content_rect.x + 20, self.content_rect.y + 100))
 
-if __name__ == '__main__':
-    sim = NormalPhysics(width=1200, height=700, world_config="")
-    screen = pygame.display.set_mode((sim.width, sim.height))
-    pygame.display.set_caption('Physics Engine - Professional UI')
-    clock = pygame.time.Clock()
-    running = True
-    
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            sim.handle_event(event)
-            
-        sim.run_frame(screen)
-        pygame.display.flip()
-        clock.tick(60)
+class ContextModal(Modal):
+    def __init__(self, screen, parent, ball):
+        super().__init__(screen, "Object Properties", 250, 250)
+        self.parent = parent
+        self.ball = ball
+        self.setup_ui()
 
-    pygame.quit()
-    sys.exit()
+    def setup_ui(self):
+        self.add_label(f"Mass: {self.ball.mass:.2f}")
+        self.add_label(f"Velocity: {math.hypot(self.ball.vx, self.ball.vy):.2f}")
+        
+        btn_freeze = Button(pygame.Rect(self.content_rect.x + 20, self.content_rect.y + 80, 100, 30), 
+                            "Freeze" if not self.ball.frozen else "Unfreeze", (200, 200, 50))
+        btn_freeze.callback = lambda: setattr(self.ball, 'frozen', not self.ball.frozen)
+        self.elements.append(btn_freeze)
+        
+        btn_del = Button(pygame.Rect(self.content_rect.right - 120, self.content_rect.y + 80, 100, 30), "Delete", (200, 50, 50))
+        btn_del.callback = lambda: self.parent.balls.remove(self.ball) if self.ball in self.parent.balls else None
+        self.elements.append(btn_del)
+        
+        self.add_label("Apply Impulse")
+        btn_imp_x = Button(pygame.Rect(self.content_rect.x + 20, self.content_rect.y + 150, 60, 30), "X+", (50, 50, 200))
+        btn_imp_x.callback = lambda: setattr(self.ball, 'vx', self.ball.vx + 5)
+        self.elements.append(btn_imp_x)
+        
+        btn_imp_y = Button(pygame.Rect(self.content_rect.x + 90, self.content_rect.y + 150, 60, 30), "Y+", (50, 50, 200))
+        btn_imp_y.callback = lambda: setattr(self.ball, 'vy', self.ball.vy - 5)
+        self.elements.append(btn_imp_y)
+
+class MainmenuModal(Modal):
+    def __init__(self, screen, parent):
+        super().__init__(screen, "Menu", 200, 200)
+        self.parent = parent
+        btn = Button(pygame.Rect(self.content_rect.x + 20, self.content_rect.y + 50, 160, 40), "Exit to Menu", (200, 50, 50))
+        btn.callback = lambda: setattr(self.parent, 'running', False)
+        self.elements.append(btn)
